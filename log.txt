@@ -1,0 +1,2 @@
+[START init_scheduler]
+[Type=0]
