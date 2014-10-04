@@ -1,2 +1,32 @@
 [START init_scheduler]
 [Type=0]
+[SCHEDULEME] [Called By=3461154560] currentTime=0.000000, tid=1, remainingTime=2, tprio=1
+[SCHEDULEME] [Called By=3461154560] currentTime=1.000000, tid=1, remainingTime=1, tprio=1
+[SCHEDULEME] [Called By=3461154560] currentTime=1.000000, tid=1, remainingTime=0, tprio=1
+[SCHEDULEME] [Called By=3452761856] currentTime=1.000000, tid=2, remainingTime=2, tprio=2
+[SCHEDULEME] [Called By=3452761856] currentTime=2.000000, tid=2, remainingTime=1, tprio=2
+[SCHEDULEME] [Called By=3452761856] currentTime=2.000000, tid=2, remainingTime=0, tprio=2
+[SCHEDULEME] [Called By=3442181888] currentTime=2.000000, tid=3, remainingTime=2, tprio=3
+[SCHEDULEME] [Called By=3442181888] currentTime=3.000000, tid=3, remainingTime=1, tprio=3
+[SCHEDULEME] [Called By=3442181888] currentTime=3.000000, tid=3, remainingTime=0, tprio=3
+[SCHEDULEME] [Called By=3433789184] currentTime=3.000000, tid=4, remainingTime=2, tprio=4
+[SCHEDULEME] [Called By=3433789184] currentTime=4.000000, tid=4, remainingTime=1, tprio=4
+[SCHEDULEME] [Called By=3433789184] currentTime=4.000000, tid=4, remainingTime=0, tprio=4
+[SCHEDULEME] [Called By=3355440896] currentTime=4.000000, tid=5, remainingTime=2, tprio=5
+[SCHEDULEME] [Called By=3355440896] currentTime=5.000000, tid=5, remainingTime=1, tprio=5
+[SCHEDULEME] [Called By=3355440896] currentTime=5.000000, tid=5, remainingTime=0, tprio=5
+[SCHEDULEME] [Called By=3347048192] currentTime=5.000000, tid=6, remainingTime=2, tprio=1
+[SCHEDULEME] [Called By=3347048192] currentTime=6.000000, tid=6, remainingTime=1, tprio=1
+[SCHEDULEME] [Called By=3347048192] currentTime=6.000000, tid=6, remainingTime=0, tprio=1
+[SCHEDULEME] [Called By=3338655488] currentTime=6.000000, tid=7, remainingTime=2, tprio=2
+[SCHEDULEME] [Called By=3338655488] currentTime=7.000000, tid=7, remainingTime=1, tprio=2
+[SCHEDULEME] [Called By=3338655488] currentTime=7.000000, tid=7, remainingTime=0, tprio=2
+[SCHEDULEME] [Called By=3330262784] currentTime=7.000000, tid=8, remainingTime=2, tprio=3
+[SCHEDULEME] [Called By=3330262784] currentTime=8.000000, tid=8, remainingTime=1, tprio=3
+[SCHEDULEME] [Called By=3330262784] currentTime=8.000000, tid=8, remainingTime=0, tprio=3
+[SCHEDULEME] [Called By=3321870080] currentTime=8.000000, tid=9, remainingTime=2, tprio=4
+[SCHEDULEME] [Called By=3321870080] currentTime=9.000000, tid=9, remainingTime=1, tprio=4
+[SCHEDULEME] [Called By=3321870080] currentTime=9.000000, tid=9, remainingTime=0, tprio=4
+[SCHEDULEME] [Called By=3313477376] currentTime=9.000000, tid=10, remainingTime=2, tprio=5
+[SCHEDULEME] [Called By=3313477376] currentTime=10.000000, tid=10, remainingTime=1, tprio=5
+[SCHEDULEME] [Called By=3313477376] currentTime=10.000000, tid=10, remainingTime=0, tprio=5
