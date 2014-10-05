@@ -1,3 +1,5 @@
+
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,12 +65,15 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
         newNode->thread->required_time = remainingTime;
         newNode->thread->priority = tprio;
 
+        // Lock the queue, so multiple threads aren't trying to add to it at the same time.
         pthread_mutex_lock(&queue_lock);
         push(ReadyQueue, newNode);
         pthread_mutex_unlock(&queue_lock);
     } else {
 
     }
+
+    // Block current thread as long as it's not at the front of the queue
     pthread_mutex_lock(&executing_lock);
     while (ReadyQueue->front->thread->id != tid) {
         printf("\t[BLOCK THREAD] tid=%d\n", tid);
@@ -81,14 +86,18 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
     Thread *currentThread = queue_get_thread(ReadyQueue, tid);
     currentThread->required_time = remainingTime;
 
+    // Once required time = 0, thread is finished executing. Pop the front of the queue,
+    // and signal all threads to resume executing. (Each thread goes back to while loop
+    // and checks if they're at the front he queue again)
     if (currentThread->required_time == 0) {
+        // Only 1 thread should be executing here at all times, so no need to lock the queue.
         pop(ReadyQueue);
         pthread_mutex_lock(&executing_lock);
         pthread_cond_signal(&executing_cond);
         pthread_mutex_unlock(&executing_lock);
     }
 
-    return currentTime;
+    return ceil(currentTime);
 }
 
 // Adds a node to the end of the queue.
