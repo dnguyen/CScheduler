@@ -7,8 +7,6 @@ struct _thread {
     float arrival_time;
     int required_time;
     int priority;
-    pthread_mutex_t execute_mutex;
-    pthread_cond_t execute_cond;
 };
 typedef struct _thread Thread;
 
@@ -32,16 +30,20 @@ void push(Queue*, Node*);
 Node* pop(Queue*);
 int queue_contains_thread(Queue*, int);
 Thread* queue_get_thread(Queue*, int);
-
+void print_queue(Queue*);
 
 Queue *ReadyQueue;
 pthread_mutex_t queue_lock;
+pthread_mutex_t executing_lock;
+pthread_cond_t executing_cond;
 
 void init_scheduler(int sched_type) {
     //logger = fopen("log.txt", "w");
 
     printf(" [START init_scheduler]\n");
     printf(" [Type=%d]\n", sched_type);
+
+    pthread_cond_init(&executing_cond, NULL);
 
     ReadyQueue = malloc(sizeof(Queue));
     ReadyQueue->size = 0;
@@ -51,8 +53,7 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
     printf(" \t[SCHEDULEME] ");
     printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
 
-    // Add thread to the ready queue if it isn't already in there.
-    pthread_mutex_lock(&queue_lock);
+    // // Add thread to the ready queue if it isn't already in there.
     if (queue_contains_thread(ReadyQueue, tid) == 0) {
 
         Node *newNode =  malloc(sizeof(Node));
@@ -61,41 +62,30 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
         newNode->thread->arrival_time = currentTime;
         newNode->thread->required_time = remainingTime;
         newNode->thread->priority = tprio;
-        pthread_mutex_init(&newNode->thread->execute_mutex, NULL);
-        pthread_cond_init(&newNode->thread->execute_cond, NULL);
 
+        pthread_mutex_lock(&queue_lock);
         push(ReadyQueue, newNode);
+        pthread_mutex_unlock(&queue_lock);
+    } else {
+
     }
+    pthread_mutex_lock(&executing_lock);
+    while (ReadyQueue->front->thread->id != tid) {
+        printf("\t[BLOCK THREAD] tid=%d\n", tid);
+        pthread_cond_wait(&executing_cond, &executing_lock);
+    }
+    pthread_mutex_unlock(&executing_lock);
+
+    printf("\t[EXECUTING THREAD] tid=%d\n", tid);
 
     Thread *currentThread = queue_get_thread(ReadyQueue, tid);
-    pthread_mutex_unlock(&queue_lock);
+    currentThread->required_time = remainingTime;
 
-    // Block current thread if it's not at the front of the queue.
-    pthread_mutex_lock(&currentThread->execute_mutex);
-    while (ReadyQueue->front->thread->id != tid) {
-        printf("waiting...\n");
-        pthread_cond_wait(&currentThread->execute_cond, &currentThread->execute_mutex);
-    }
-    pthread_mutex_unlock(&currentThread->execute_mutex);
-
-    printf("\t[EXECUTE THREAD] tid=%d\n", tid);
-
-    // When remaining time hits 0, thread has completed and needs to be removed from the queue.
-    // The next thread is then signaled to execute
-    if (remainingTime == 0) {
-        printf("\t[remainingTime=0]\n");
-        pthread_mutex_lock(&queue_lock);
+    if (currentThread->required_time == 0) {
         pop(ReadyQueue);
-
-        pthread_mutex_unlock(&queue_lock);
-
-        // Signal the front of the queue to execute.
-        if (ReadyQueue->front != NULL) {
-            printf("\t[SIGNAL FRONT] tid=%d\n", ReadyQueue->front->thread->id);
-            pthread_mutex_lock(&ReadyQueue->front->thread->execute_mutex);
-            pthread_cond_signal(&ReadyQueue->front->thread->execute_cond);
-            pthread_mutex_unlock(&ReadyQueue->front->thread->execute_mutex);
-        }
+        pthread_mutex_lock(&executing_lock);
+        pthread_cond_signal(&executing_cond);
+        pthread_mutex_unlock(&executing_lock);
     }
 
     return currentTime;
@@ -107,22 +97,24 @@ void push(Queue *queue, Node *node) {
     printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
         node->thread->id, node->thread->arrival_time, node->thread->required_time, node->thread->priority);
 
-    if (queue->size == 0) {
+    if (queue->front == NULL) {
         queue->front = node;
     } else {
-        if (queue->back == NULL) {
-            queue->front->next = node;
-        } else {
-            queue->back->next = node;
+        Node *current = queue->front;
+        while (current->next != NULL) {
+            current = current->next;
         }
-    }
 
+        current->next = node;
+    }
     queue->size++;
+    print_queue(queue);
 }
 
 // Removes the first node in the queue and returns it
 Node* pop(Queue *queue) {
-    printf("\t\t[POP QUEUE] size=%d\n", queue->size - 1);
+    printf("\t\t[POP QUEUE] size=%d, front=%d, next=%d\n", queue->size - 1, queue->front->thread->id, (queue->front->next != NULL ? queue->front->next->thread->id : -1));
+
     Node *temp = queue->front;
 
     if (queue->front->next != NULL) {
@@ -132,6 +124,8 @@ Node* pop(Queue *queue) {
         queue->front = NULL;
     }
     queue->size--;
+
+    print_queue(queue);
 
     return temp;
 }
@@ -159,4 +153,14 @@ Thread *queue_get_thread(Queue *queue, int threadId) {
         }
     }
     return NULL;
+}
+
+void print_queue(Queue *queue) {
+    printf("\t\t\t[CURRENT QUEUE] ");
+    Node* current = queue->front;
+    while (current != NULL) {
+        printf("[%d] ", current->thread->id);
+        current = current->next;
+    }
+    printf("\n");
 }
