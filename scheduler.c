@@ -36,8 +36,10 @@ void print_queue(Queue*);
 
 Queue *ReadyQueue;
 pthread_mutex_t queue_lock;
+pthread_mutex_t time_lock;
 pthread_mutex_t executing_lock;
 pthread_cond_t executing_cond;
+float GLOBAL_TIME;
 
 void init_scheduler(int sched_type) {
     //logger = fopen("log.txt", "w");
@@ -46,6 +48,8 @@ void init_scheduler(int sched_type) {
     printf(" [Type=%d]\n", sched_type);
 
     pthread_cond_init(&executing_cond, NULL);
+    pthread_mutex_init(&queue_lock, NULL);
+    pthread_mutex_init(&time_lock, NULL);
 
     ReadyQueue = malloc(sizeof(Queue));
     ReadyQueue->size = 0;
@@ -54,6 +58,10 @@ void init_scheduler(int sched_type) {
 int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
     printf(" \t[SCHEDULEME] ");
     printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
+
+    pthread_mutex_lock(&time_lock);
+    GLOBAL_TIME = currentTime;
+    pthread_mutex_unlock(&time_lock);
 
     // // Add thread to the ready queue if it isn't already in there.
     if (queue_contains_thread(ReadyQueue, tid) == 0) {
@@ -83,12 +91,14 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
 
     printf("\t[EXECUTING THREAD] tid=%d\n", tid);
 
+    pthread_mutex_lock(&queue_lock);
     Thread *currentThread = queue_get_thread(ReadyQueue, tid);
     currentThread->required_time = remainingTime;
+    pthread_mutex_unlock(&queue_lock);
 
     // Once required time = 0, thread is finished executing. Pop the front of the queue,
     // and signal all threads to resume executing. (Each thread goes back to while loop
-    // and checks if they're at the front he queue again)
+    // and checks if they're at the front of the queue again)
     if (currentThread->required_time == 0) {
         // Only 1 thread should be executing here at all times, so no need to lock the queue.
         pop(ReadyQueue);
@@ -97,7 +107,8 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
         pthread_mutex_unlock(&executing_lock);
     }
 
-    return ceil(currentTime);
+    printf("\t[RETURNING] tid=%d, currentTime=%d\n", tid, (int)ceil(GLOBAL_TIME));
+    return (int)ceil(GLOBAL_TIME);
 }
 
 // Adds a node to the end of the queue.
