@@ -29,6 +29,7 @@ typedef struct queue Queue;
 
 // Prototypes
 void push(Queue*, Node*);
+void insertNodeSRTF(Queue*, Node*);
 Node* pop(Queue*);
 int queue_contains_thread(Queue*, int);
 Thread* queue_get_thread(Queue*, int);
@@ -40,9 +41,11 @@ pthread_mutex_t time_lock;
 pthread_mutex_t executing_lock;
 pthread_cond_t executing_cond;
 float GLOBAL_TIME;
+int SCHED_TYPE;
 
 void init_scheduler(int sched_type) {
     //logger = fopen("log.txt", "w");
+    SCHED_TYPE = sched_type;
 
     printf(" [START init_scheduler]\n");
     printf(" [Type=%d]\n", sched_type);
@@ -55,15 +58,14 @@ void init_scheduler(int sched_type) {
     ReadyQueue->size = 0;
 }
 
-int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
-    printf(" \t[SCHEDULEME] ");
-    printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
-
+// Implement the First Come First Serve Scheduler method
+int FCFS(float currentTime, int tid, int remainingTime, int tprio) {
+    
     pthread_mutex_lock(&time_lock);
     GLOBAL_TIME = currentTime;
     pthread_mutex_unlock(&time_lock);
-
-    // // Add thread to the ready queue if it isn't already in there.
+    
+    // Add thread to the ready queue if it isn't already in there.
     if (queue_contains_thread(ReadyQueue, tid) == 0) {
 
         Node *newNode =  malloc(sizeof(Node));
@@ -109,6 +111,124 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
 
     printf("\t[RETURNING] tid=%d, currentTime=%d\n", tid, (int)ceil(GLOBAL_TIME));
     return (int)ceil(GLOBAL_TIME);
+
+}
+
+int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
+   
+    pthread_mutex_lock(&time_lock);
+    GLOBAL_TIME = currentTime;
+
+    // // Add thread to the ready queue if it isn't already in there.
+    if (queue_contains_thread(ReadyQueue, tid) == 0) {
+    
+        Node *newNode =  malloc(sizeof(Node));
+        newNode->thread = malloc(sizeof(Thread));
+        newNode->thread->id = tid;
+        newNode->thread->arrival_time = currentTime;
+        newNode->thread->required_time = remainingTime;
+        newNode->thread->priority = tprio;
+
+        // Lock the queue, so multiple threads aren't trying to add to it at the same time.
+        pthread_mutex_lock(&queue_lock);
+        insertNodeSRTF(ReadyQueue, newNode);
+        pthread_mutex_unlock(&queue_lock);
+    } else {
+
+    }
+
+    pthread_mutex_unlock(&time_lock);
+
+    // Block current thread as long as it's not at the front of the queue
+    pthread_mutex_lock(&executing_lock);
+    while (ReadyQueue->front->thread->id != tid) {
+        printf("\t[BLOCK THREAD] tid=%d\n", tid);
+        pthread_cond_wait(&executing_cond, &executing_lock);
+    }
+    pthread_mutex_unlock(&executing_lock);
+
+    printf("\t[EXECUTING THREAD] tid=%d\n", tid);
+
+    pthread_mutex_lock(&queue_lock);
+    Thread *currentThread = queue_get_thread(ReadyQueue, tid);
+    currentThread->required_time = remainingTime;
+    pthread_mutex_unlock(&queue_lock);
+
+    // Once required time = 0, thread is finished executing. Pop the front of the queue,
+    // and signal all threads to resume executing. (Each thread goes back to while loop
+    // and checks if they're at the front of the queue again)
+    if (currentThread->required_time == 0) {
+        // Only 1 thread should be executing here at all times, so no need to lock the queue.
+        pop(ReadyQueue);
+        pthread_mutex_lock(&executing_lock);
+        pthread_cond_signal(&executing_cond);
+        pthread_mutex_unlock(&executing_lock);
+    }
+
+    
+    //pthread_cond_signal(&executing_cond);
+    printf("\t[RETURNING] tid=%d, currentTime=%d\n", tid, (int)ceil(GLOBAL_TIME));
+    return (int)ceil(GLOBAL_TIME);
+
+}
+
+int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
+    printf(" \t[SCHEDULEME] ");
+    printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
+
+    // Check the type of scheduler and continue with the method specified 
+    if (SCHED_TYPE == 0) return(FCFS(currentTime, tid, remainingTime, tprio));
+    if (SCHED_TYPE == 1) return(SRTF(currentTime, tid, remainingTime, tprio));
+
+    }
+
+void insertNodeSRTF(Queue *queue, Node *node) {
+    printf("\t\t[ADDED TO READY QUEUE] [size=%d]", queue->size + 1);
+    printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
+    node->thread->id, node->thread->arrival_time, node->thread->required_time, node->thread->priority);
+
+
+    if (queue->front == NULL || queue->front->thread->required_time > node->thread->required_time) {
+        node->next = queue->front;
+        queue->front = node;
+    } else {
+        // Locate the node before the point of insertion
+        Node *current = queue->front;
+        while (current->next!= NULL && current->next->thread->required_time < node->thread->required_time){ 
+
+            current = current->next;
+        }
+
+        if(current->thread->arrival_time == node->thread->arrival_time){
+        
+            printf("here");
+        }
+        node->next = current->next;
+        current->next = node;
+    }
+
+/*
+            if (current->next->thread->required_time == node->thread->required_time) {
+
+                if(current->next->thread->arrival_time < node->thread->arrival_time) {
+                    node->next = current->next;
+                    current->next = node;
+                } else {
+                    node->next = current->next->next;
+                    current->next->next = node;
+                }
+ 
+            } else {
+                node->next = current->next;
+                current->next = node;
+            }
+*/
+
+    queue->size++;
+    print_queue(queue);
+    
+    pthread_cond_signal(&executing_cond);
+
 }
 
 // Adds a node to the end of the queue.
