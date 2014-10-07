@@ -126,9 +126,10 @@ int _pre_init(int sched_type)
 }
 
 int main(int argc, char *argv[])
-{	argc = 3;// ./out 0 input_1
-	argv[1] = "1";// schedule type
-	argv[2] = "p1_test/TestInputs/input_1";// input file
+{
+	// argc = 3;// ./out 0 input_1
+	// argv[1] = "1";// schedule type
+	// argv[2] = "p1_test/TestInputs/input_1";// input file
 	int inactivity_timeout = 50;
 	if (argc < 3)
 	{
