@@ -34,6 +34,8 @@ Node* pop(Queue*);
 int queue_contains_thread(Queue*, int);
 Thread* queue_get_thread(Queue*, int);
 void print_queue(Queue*);
+int FCFS(float, int, int, int);
+int SRTF(float, int, int, int);
 
 Queue *ReadyQueue;
 pthread_mutex_t queue_lock;
@@ -44,7 +46,6 @@ float GLOBAL_TIME;
 int SCHED_TYPE;
 
 void init_scheduler(int sched_type) {
-    //logger = fopen("log.txt", "w");
     SCHED_TYPE = sched_type;
 
     printf(" [START init_scheduler]\n");
@@ -56,6 +57,18 @@ void init_scheduler(int sched_type) {
 
     ReadyQueue = malloc(sizeof(Queue));
     ReadyQueue->size = 0;
+}
+
+int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
+
+    pthread_t thread = pthread_self();
+    printf(" \t[SCHEDULEME (%u)] ", thread);
+    printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
+
+    // Check the type of scheduler and continue with the method specified
+    if (SCHED_TYPE == 0) return(FCFS(currentTime, tid, remainingTime, tprio));
+    if (SCHED_TYPE == 1) return(SRTF(currentTime, tid, remainingTime, tprio));
+
 }
 
 // Implement the First Come First Serve Scheduler method
@@ -165,18 +178,6 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
 
     printf("\t[RETURNING] tid=%d, currentTime=%d\n", tid, (int)ceil(GLOBAL_TIME));
     return (int)ceil(GLOBAL_TIME);
-
-}
-
-int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
-
-    pthread_t thread = pthread_self();
-    printf(" \t[SCHEDULEME (%u)] ", thread);
-    printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
-
-    // Check the type of scheduler and continue with the method specified
-    if (SCHED_TYPE == 0) return(FCFS(currentTime, tid, remainingTime, tprio));
-    if (SCHED_TYPE == 1) return(SRTF(currentTime, tid, remainingTime, tprio));
 
 }
 
