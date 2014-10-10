@@ -1,8 +1,10 @@
-
+#include <assert.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+const int DEBUG = 0;
 
 struct _thread {
     int id;
@@ -27,7 +29,6 @@ struct queue {
 };
 typedef struct queue Queue;
 
-
 // Prototypes
 void push(Queue*, Node*);
 void insertNodeSRTF(Queue*, Node*);
@@ -50,7 +51,13 @@ Queue **MULTI_LEVEL_QUEUE;
 pthread_mutex_t queue_lock;
 pthread_mutex_t executing_lock;
 pthread_cond_t executing_cond;
+
+// Keep track of 2 times: a global time, and the time schedule_me was called
+// Should always be in sync with currentTime, but if currentTime, GLOBAL_TIME, SCHEDULE_ME_TIME
+// ever go out of sync, we'll decide which one to use before returning from schedume_me
 float GLOBAL_TIME;
+float SCHEDULE_ME_TIME;
+
 int SCHED_TYPE;
 
 void init_multi_level_queue() {
@@ -66,9 +73,6 @@ void init_multi_level_queue() {
 void init_scheduler(int sched_type) {
     SCHED_TYPE = sched_type;
 
-    printf(" [START init_scheduler]\n");
-    printf(" [Type=%d]\n", sched_type);
-
     pthread_cond_init(&executing_cond, NULL);
     pthread_mutex_init(&queue_lock, NULL);
 
@@ -79,10 +83,13 @@ void init_scheduler(int sched_type) {
 }
 
 int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
+    SCHEDULE_ME_TIME = currentTime;
 
     pthread_t thread = pthread_self();
-    printf(" \t[SCHEDULEME (%u)] ", (int)thread);
-    printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
+    if (DEBUG == 1) {
+        printf(" \t[SCHEDULEME (%u)] ", (int)thread);
+        printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
+    }
 
     // Check the type of scheduler and continue with the method specified
     if (SCHED_TYPE == 0) return (FCFS(currentTime, tid, remainingTime, tprio));
@@ -114,11 +121,8 @@ int FCFS(float currentTime, int tid, int remainingTime, int tprio) {
     // Block current thread as long as it's not at the front of the queue
     while (ReadyQueue->front->thread->id != tid) {
         GLOBAL_TIME = currentTime;
-
-        printf("\t[BLOCK THREAD] tid=%d\n", tid);
         pthread_cond_wait(&executing_cond, &queue_lock);
     }
-    printf("\t[EXECUTING THREAD] tid=%d\n", tid);
 
     ReadyQueue->front->thread->required_time = remainingTime;
 
@@ -126,12 +130,10 @@ int FCFS(float currentTime, int tid, int remainingTime, int tprio) {
     // and signal all threads to resume executing. (Each thread goes back to while loop
     // and checks if they're at the front of the queue again)
     if (ReadyQueue->front->thread->required_time == 0) {
-        // Only 1 thread should be executing here at all times, so no need to lock the queue.
         pop(ReadyQueue);
         pthread_cond_signal(&executing_cond);
     }
 
-    printf("\t[RETURNING] tid=%d, currentTime=%d\n", tid, (int)ceil(GLOBAL_TIME));
     pthread_mutex_unlock(&queue_lock);
 
     return (int)ceil(GLOBAL_TIME);
@@ -147,7 +149,7 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
         Node *newNode = malloc(sizeof(Node));
         newNode->thread = malloc(sizeof(Thread));
         newNode->thread->id = tid;
-        newNode->thread->arrival_time = currentTime;
+        newNode->thread->arrival_time = ceil(currentTime);
         newNode->thread->required_time = remainingTime;
         newNode->thread->priority = tprio;
 
@@ -157,46 +159,49 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
 
     // Block current thread as long as it's not at the front of the queue
     while (ReadyQueue->front->thread->id != tid) {
-        printf("\t[BLOCK THREAD] tid=%d\n", tid);
         pthread_cond_wait(&executing_cond, &queue_lock);
     }
 
+    ReadyQueue->front->thread->arrival_time = currentTime;
     ReadyQueue->front->thread->required_time = remainingTime;
 
     pthread_t thread = pthread_self();
-    printf("\t[EXECUTING THREAD (%u)] tid=%d, currentThread_arrivalTime=%f\n", (int)thread, tid, ReadyQueue->front->thread->arrival_time);
 
     // Once required time = 0, thread is finished executing. Pop the front of the queue,
     // and signal all threads to resume executing. (Each thread goes back to while loop
     // and checks if they're at the front of the queue again)
     if (ReadyQueue->front->thread->required_time == 0) {
-        // Only 1 thread should be executing here at all times, so no need to lock the queue.
         pop(ReadyQueue);
-
         if (ReadyQueue->front != NULL)
             pthread_cond_signal(&executing_cond);
     }
 
-    printf("\t[RETURNING] tid=%d, currentTime=%d\n", tid, (int)ceil(GLOBAL_TIME));
     pthread_mutex_unlock(&queue_lock);
 
-    if (currentTime > GLOBAL_TIME)
-        GLOBAL_TIME = currentTime;
+    // GLOBAL_TIME should always be increasing with the currentTime
+    if (ceil(currentTime) > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = ceil(currentTime);
+    }
+
+    // when a thread resumes execution its currentTime was set to the time it was
+    // first added to the queue, not the "real" currentTime.
+    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = GLOBAL_TIME;
+    }
 
     if (ReadyQueue->front != NULL)
         pthread_cond_signal(&executing_cond);
 
-    return (int)ceil(GLOBAL_TIME);
+    return SCHEDULE_ME_TIME;
 
 }
 
-//
-// Order of the threads is wrong for input_1, this function probably needs some work.
 void insertNodeSRTF(Queue *queue, Node *node) {
+    if (DEBUG == 1) {
     printf("\t\t[ADDED TO READY QUEUE] [size=%d]", queue->size + 1);
     printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
     node->thread->id, node->thread->arrival_time, node->thread->required_time, node->thread->priority);
-
+    }
     if (queue->front == NULL || queue->front->thread->required_time > node->thread->required_time) {
         node->next = queue->front;
         queue->front = node;
@@ -208,6 +213,8 @@ void insertNodeSRTF(Queue *queue, Node *node) {
             current = current->next;
         }
 
+        // If the node we're inserting and the node we're inserting it after (current) have the same remaining time
+        // then look at their arrival times. the one with the smaller arrival time will be placed first.
         if (current->thread->required_time == node->thread->required_time) {
             if (current->thread->arrival_time < node->thread->arrival_time) {
                 node->next = current->next;
@@ -309,10 +316,11 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
 
 // Adds a node to the end of the queue.
 void push(Queue *queue, Node *node) {
+    if (DEBUG == 1) {
     printf("\t\t[ADDED TO READY QUEUE] [size=%d]", queue->size + 1);
     printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
         node->thread->id, node->thread->arrival_time, node->thread->required_time, node->thread->priority);
-
+    }
     node->next = NULL;
     if (queue->front == NULL) {
         queue->front = node;
@@ -329,13 +337,13 @@ void push(Queue *queue, Node *node) {
 
 // Removes the first node in the queue and returns it
 Node* pop(Queue *queue) {
+    if (DEBUG == 1) {
     printf("\t\t[POP QUEUE] size=%d, front=%d, next=%d\n", queue->size - 1, queue->front->thread->id, (queue->front->next != NULL ? queue->front->next->thread->id : -1));
-
+    }
     Node *temp = queue->front;
 
     if (queue->front->next != NULL) {
         queue->front = queue->front->next;
-        printf("\t\t\t[New front] tid=%d\n", queue->front->thread->id);
     } else {
         queue->front = NULL;
     }
@@ -382,6 +390,7 @@ Thread *queue_get_thread(Queue *queue, int threadId) {
 }
 
 void print_queue(Queue *queue) {
+    if (DEBUG == 1) {
     printf("\t\t\t[CURRENT QUEUE] ");
     Node* current = queue->front;
     while (current != NULL) {
@@ -389,6 +398,7 @@ void print_queue(Queue *queue) {
         current = current->next;
     }
     printf("\n");
+    }
 }
 
 void print_multi_level_queue() {
