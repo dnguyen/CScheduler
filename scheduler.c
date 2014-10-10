@@ -32,6 +32,7 @@ typedef struct queue Queue;
 void Enqueue(Queue*, Node*);
 Node* Dequeue(Queue*);
 void insertNodeSRTF(Queue*, Node*);
+void insertNodePBS(Queue*, Node*);
 int queue_contains_thread(Queue*, int);
 int multi_level_queue_contains_thread(int);
 Thread* queue_get_thread(Queue*, int);
@@ -41,6 +42,8 @@ void print_multi_level_queue();
 int FCFS(float, int, int, int);
 int SRTF(float, int, int, int);
 int MLFQ(float, int, int, int);
+int  PBS(float, int, int, int);
+
 
 Queue *ReadyQueue;
 #define MULTI_LEVEL_QUEUE_SIZE 5
@@ -91,9 +94,11 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
     }
 
     // Check the type of scheduler and continue with the method specified
-    if (SCHED_TYPE == 0) return (FCFS(currentTime, tid, remainingTime, tprio));
-    if (SCHED_TYPE == 1) return (SRTF(currentTime, tid, remainingTime, tprio));
-    if (SCHED_TYPE == 2) return  MLFQ(currentTime, tid, remainingTime, tprio);
+    if (SCHED_TYPE == 0) return FCFS(currentTime, tid, remainingTime, tprio);
+    if (SCHED_TYPE == 1) return SRTF(currentTime, tid, remainingTime, tprio);
+    if (SCHED_TYPE == 2) return  PBS(currentTime, tid, remainingTime, tprio);
+    if (SCHED_TYPE == 3) return MLFQ(currentTime, tid, remainingTime, tprio);
+
 }
 
 // Implement the First Come First Serve Scheduler method
@@ -312,6 +317,106 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
 
     return ceil(GLOBAL_TIME);
 }
+
+
+int PBS(float currentTime, int tid, int remainingTime, int tprio) {
+
+    pthread_mutex_lock(&queue_lock);
+
+    // // Add thread to the ready queue if it isn't already in there.
+    if (queue_contains_thread(ReadyQueue, tid) == 0) {
+        Node *newNode = malloc(sizeof(Node));
+        newNode->thread = malloc(sizeof(Thread));
+        newNode->thread->id = tid;
+        newNode->thread->arrival_time = ceil(currentTime);
+        newNode->thread->required_time = remainingTime;
+        newNode->thread->priority = tprio;
+
+        // Lock the queue, so multiple threads aren't trying to add to it at the same time.
+        insertNodePBS(ReadyQueue, newNode);
+    }
+
+    // Block current thread as long as it's not at the front of the queue
+    while (ReadyQueue->front->thread->id != tid) {
+        pthread_cond_wait(&executing_cond, &queue_lock);
+    }
+
+    ReadyQueue->front->thread->arrival_time = currentTime;
+    ReadyQueue->front->thread->required_time = remainingTime;
+
+    pthread_t thread = pthread_self();
+
+    // Once required time = 0, thread is finished executing. Pop the front of the queue,
+    // and signal all threads to resume executing. (Each thread goes back to while loop
+    // and checks if they're at the front of the queue again)
+    if (ReadyQueue->front->thread->required_time == 0) {
+        Dequeue(ReadyQueue);
+        if (ReadyQueue->front != NULL)
+            pthread_cond_signal(&executing_cond);
+    }
+
+    pthread_mutex_unlock(&queue_lock);
+
+    // GLOBAL_TIME should always be increasing with the currentTime
+    if (ceil(currentTime) > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = ceil(currentTime);
+    }
+
+    // when a thread resumes execution its currentTime was set to the time it was
+    // first added to the queue, not the "real" currentTime.
+    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = GLOBAL_TIME;
+    }
+
+    if (ReadyQueue->front != NULL)
+        pthread_cond_signal(&executing_cond);
+
+    return SCHEDULE_ME_TIME;
+
+}
+
+void insertNodePBS(Queue *queue, Node *node) {
+    if (DEBUG == 1) {
+    printf("\t\t[ADDED TO READY QUEUE] [size=%d]", queue->size + 1);
+    printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
+    node->thread->id, node->thread->arrival_time, node->thread->required_time, node->thread->priority);
+    }
+
+    // Compare the priority of the node we are inserting to the priority of the nodes that
+    // are currently in the queue
+    if (queue->front == NULL || queue->front->thread->priority > node->thread->priority) {
+        node->next = queue->front;
+        queue->front = node;
+    } else {
+        // Locate the node before the point of insertion
+        Node *current = queue->front;
+        while (current->next != NULL && current->next->thread->priority < node->thread->priority){
+
+            current = current->next;
+        }
+
+        // If the node we're inserting and the node we're inserting it after (current) 
+        // have the same priority, then look at their arrival times.
+        // The one with the smaller arrival time will be placed first.
+        if (current->thread->priority == node->thread->priority) {
+            if (current->thread->arrival_time < node->thread->arrival_time) {
+                node->next = current->next;
+                current->next = node;
+            } else {
+                node->next = current;
+                current->next = current->next->next;
+            }
+        } else {
+            node->next = current->next;
+            current->next = node;
+        }
+    }
+
+    queue->size++;
+    print_queue(queue);
+
+}
+
 
 // Adds a node to the end of the queue.
 void Enqueue(Queue *queue, Node *node) {
