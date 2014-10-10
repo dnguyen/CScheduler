@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -30,9 +29,9 @@ struct queue {
 typedef struct queue Queue;
 
 // Prototypes
-void push(Queue*, Node*);
+void Enqueue(Queue*, Node*);
+Node* Dequeue(Queue*);
 void insertNodeSRTF(Queue*, Node*);
-Node* pop(Queue*);
 int queue_contains_thread(Queue*, int);
 int multi_level_queue_contains_thread(int);
 Thread* queue_get_thread(Queue*, int);
@@ -115,7 +114,7 @@ int FCFS(float currentTime, int tid, int remainingTime, int tprio) {
         newNode->thread->priority = tprio;
 
         // Lock the queue, so multiple threads aren't trying to add to it at the same time.
-        push(ReadyQueue, newNode);
+        Enqueue(ReadyQueue, newNode);
     }
 
     // Block current thread as long as it's not at the front of the queue
@@ -130,7 +129,7 @@ int FCFS(float currentTime, int tid, int remainingTime, int tprio) {
     // and signal all threads to resume executing. (Each thread goes back to while loop
     // and checks if they're at the front of the queue again)
     if (ReadyQueue->front->thread->required_time == 0) {
-        pop(ReadyQueue);
+        Dequeue(ReadyQueue);
         pthread_cond_signal(&executing_cond);
     }
 
@@ -171,7 +170,7 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
     // and signal all threads to resume executing. (Each thread goes back to while loop
     // and checks if they're at the front of the queue again)
     if (ReadyQueue->front->thread->required_time == 0) {
-        pop(ReadyQueue);
+        Dequeue(ReadyQueue);
         if (ReadyQueue->front != NULL)
             pthread_cond_signal(&executing_cond);
     }
@@ -253,7 +252,7 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
 
         // Lock the queue, so multiple threads aren't trying to add to it at the same time.
         //insertNodeSRTF(ReadyQueue, newNode);
-        push(MULTI_LEVEL_QUEUE[0], newNode);
+        Enqueue(MULTI_LEVEL_QUEUE[0], newNode);
         print_multi_level_queue();
     }
 
@@ -298,14 +297,14 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
 
     if (currentExecutingLevel->front->thread->required_time == 0) {
         pthread_mutex_lock(&executing_lock);
-        pop(currentExecutingLevel);
+        Dequeue(currentExecutingLevel);
         pthread_cond_signal(&executing_cond);
         pthread_mutex_unlock(&executing_lock);
     } else if (currentExecutingLevel->front->thread->original_required_time - currentExecutingLevel->front->thread->required_time >= TIME_QUANTUMS[i]) {
         printf("\t\t[THREAD > TIME QUANTUM] quantum=%d\n", TIME_QUANTUMS[i]);
         printf("\t\t\t[PUSH %d from %d to %d]\n", currentExecutingLevel->front->thread->id, i, i + 1);
         pthread_mutex_lock(&executing_lock);
-        push(MULTI_LEVEL_QUEUE[i + 1], pop(MULTI_LEVEL_QUEUE[i]));
+        Enqueue(MULTI_LEVEL_QUEUE[i + 1], Dequeue(MULTI_LEVEL_QUEUE[i]));
 
         //pthread_cond_wait(&executing_cond, &executing_lock);
         pthread_mutex_unlock(&executing_lock);
@@ -315,7 +314,7 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
 }
 
 // Adds a node to the end of the queue.
-void push(Queue *queue, Node *node) {
+void Enqueue(Queue *queue, Node *node) {
     if (DEBUG == 1) {
     printf("\t\t[ADDED TO READY QUEUE] [size=%d]", queue->size + 1);
     printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
@@ -336,7 +335,7 @@ void push(Queue *queue, Node *node) {
 }
 
 // Removes the first node in the queue and returns it
-Node* pop(Queue *queue) {
+Node* Dequeue(Queue *queue) {
     if (DEBUG == 1) {
     printf("\t\t[POP QUEUE] size=%d, front=%d, next=%d\n", queue->size - 1, queue->front->thread->id, (queue->front->next != NULL ? queue->front->next->thread->id : -1));
     }
