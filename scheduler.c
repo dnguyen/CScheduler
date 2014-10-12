@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-const int DEBUG = 0;
+const int DEBUG = 1;
 
 struct _thread {
     int id;
@@ -11,6 +11,8 @@ struct _thread {
     int original_required_time;
     int required_time;
     int priority;
+    pthread_cond_t executing_cond;
+    int quantum;
 };
 typedef struct _thread Thread;
 
@@ -35,6 +37,8 @@ void insertNodeSRTF(Queue*, Node*);
 void insertNodePBS(Queue*, Node*);
 int queue_contains_thread(Queue*, int);
 int multi_level_queue_contains_thread(int);
+int get_highest_non_null_level();
+Thread* get_thread_from_mlfq(int);
 Thread* queue_get_thread(Queue*, int);
 void print_queue(Queue*);
 void print_multi_level_queue();
@@ -42,7 +46,7 @@ void print_multi_level_queue();
 int FCFS(float, int, int, int);
 int SRTF(float, int, int, int);
 int MLFQ(float, int, int, int);
-int  PBS(float, int, int, int);
+int PBS(float, int, int, int);
 
 
 Queue *ReadyQueue;
@@ -96,7 +100,7 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
     // Check the type of scheduler and continue with the method specified
     if (SCHED_TYPE == 0) return FCFS(currentTime, tid, remainingTime, tprio);
     if (SCHED_TYPE == 1) return SRTF(currentTime, tid, remainingTime, tprio);
-    if (SCHED_TYPE == 2) return  PBS(currentTime, tid, remainingTime, tprio);
+    if (SCHED_TYPE == 2) return PBS(currentTime, tid, remainingTime, tprio);
     if (SCHED_TYPE == 3) return MLFQ(currentTime, tid, remainingTime, tprio);
 
 }
@@ -157,7 +161,6 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
         newNode->thread->required_time = remainingTime;
         newNode->thread->priority = tprio;
 
-        // Lock the queue, so multiple threads aren't trying to add to it at the same time.
         insertNodeSRTF(ReadyQueue, newNode);
     }
 
@@ -240,10 +243,7 @@ void insertNodeSRTF(Queue *queue, Node *node) {
 
 int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
     pthread_mutex_lock(&queue_lock);
-    GLOBAL_TIME = ceil(currentTime);
-    pthread_mutex_unlock(&queue_lock);
 
-        pthread_mutex_lock(&queue_lock);
     // Add thread to the top-level queue if it isn't already contained in any of the queues
     if (multi_level_queue_contains_thread(tid) == 0) {
 
@@ -254,68 +254,90 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
         newNode->thread->required_time = remainingTime;
         newNode->thread->original_required_time = remainingTime;
         newNode->thread->priority = tprio;
+        pthread_cond_init(&newNode->thread->executing_cond, NULL);
+        newNode->thread->quantum = 5;
 
-        // Lock the queue, so multiple threads aren't trying to add to it at the same time.
-        //insertNodeSRTF(ReadyQueue, newNode);
         Enqueue(MULTI_LEVEL_QUEUE[0], newNode);
         print_multi_level_queue();
     }
 
     // Find the highest level queue that contains threads that need to be executed
-    int i = 0;
-    Queue *currentExecutingLevel = MULTI_LEVEL_QUEUE[0];
-    while (i < MULTI_LEVEL_QUEUE_SIZE) {
-        if (MULTI_LEVEL_QUEUE[i]->size > 0) {
-            currentExecutingLevel = MULTI_LEVEL_QUEUE[i];
-            break;
-        }
-        i++;
-    }
-
-        pthread_mutex_unlock(&queue_lock);
-    printf("\t[HIGHEST LEVEL QUEUE] level=%d\n", i);
+    int current_level = get_highest_non_null_level();
+    Thread *current_thread = get_thread_from_mlfq(tid);
 
     // Block all threads that are not at the head of the highest level queue
-    pthread_mutex_lock(&executing_lock);
-    while (currentExecutingLevel->front->thread->id != tid) {
-        pthread_mutex_lock(&queue_lock);
-        GLOBAL_TIME = currentTime;
-        pthread_mutex_unlock(&queue_lock);
 
-        printf("\t[BLOCKING THREAD] tid=%d, currenttid=%d\n", tid, currentExecutingLevel->front->thread->id);
-        pthread_cond_wait(&executing_cond, &executing_lock);
-
-        if (currentExecutingLevel->size == 0) {
-            printf("\t[CURRENT EXECUTING LEVEL SIZE = 0] i=%d\n", i);
-            i++;
-            currentExecutingLevel = MULTI_LEVEL_QUEUE[i];
-        }
+    while (MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->id != tid) {
+        printf("\t[BLOCKING THREAD] tid=%d, currenttid=%d, executingLevel=%d\n", tid, MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->id, current_level);
+        pthread_cond_wait(&current_thread->executing_cond, &queue_lock);
     }
-    pthread_mutex_unlock(&executing_lock);
+
+    current_level = get_highest_non_null_level();
+
     // start executing thread
-    printf("\t[EXECUTING THREAD] tid=%d, originalRemainingTime=%d, remainingTime=%d\n", tid, currentExecutingLevel->front->thread->original_required_time, remainingTime);
+    printf("\t[EXECUTING THREAD] tid=%d, originalRemainingTime=%d, remainingTime=%d\n", tid, MULTI_LEVEL_QUEUE[current_level]->front->thread->original_required_time, remainingTime);
     //
+    MULTI_LEVEL_QUEUE[current_level]->front->thread->arrival_time = currentTime;
+    MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time = remainingTime;
+    printf("\t[QUANTUM Be] tid=%d, quantum=%d\n",  MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->id, MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->quantum);
 
-    pthread_mutex_lock(&queue_lock);
-    currentExecutingLevel->front->thread->required_time = remainingTime;
-    pthread_mutex_unlock(&queue_lock);
+    if (MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time == 0) {
+        Dequeue(MULTI_LEVEL_QUEUE[current_level]);
+        if (MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front != NULL)
+            pthread_cond_signal(&MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->executing_cond);
+    //} else if (MULTI_LEVEL_QUEUE[current_level]->front->thread->original_required_time - MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time >=  TIME_QUANTUMS[current_level]) {
+    } else if (MULTI_LEVEL_QUEUE[current_level]->front->thread->quantum == 0) {
+        printf("\t\t[THREAD > TIME QUANTUM] quantum=%d\n", TIME_QUANTUMS[current_level]);
+        printf("\t\t\t[PUSH %d from %d to %d]\n", MULTI_LEVEL_QUEUE[current_level]->front->thread->id, current_level, current_level + 1);
 
-    if (currentExecutingLevel->front->thread->required_time == 0) {
-        pthread_mutex_lock(&executing_lock);
-        Dequeue(currentExecutingLevel);
-        pthread_cond_signal(&executing_cond);
-        pthread_mutex_unlock(&executing_lock);
-    } else if (currentExecutingLevel->front->thread->original_required_time - currentExecutingLevel->front->thread->required_time >= TIME_QUANTUMS[i]) {
-        printf("\t\t[THREAD > TIME QUANTUM] quantum=%d\n", TIME_QUANTUMS[i]);
-        printf("\t\t\t[PUSH %d from %d to %d]\n", currentExecutingLevel->front->thread->id, i, i + 1);
-        pthread_mutex_lock(&executing_lock);
-        Enqueue(MULTI_LEVEL_QUEUE[i + 1], Dequeue(MULTI_LEVEL_QUEUE[i]));
+        Node *newNode = malloc(sizeof(Node));
+        newNode->thread = malloc(sizeof(Thread));
+        newNode->thread->id = MULTI_LEVEL_QUEUE[current_level]->front->thread->id;
+        newNode->thread->arrival_time = MULTI_LEVEL_QUEUE[current_level]->front->thread->arrival_time;
+        newNode->thread->required_time = MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time;
+        newNode->thread->original_required_time = MULTI_LEVEL_QUEUE[current_level]->front->thread->original_required_time;
+        newNode->thread->priority = MULTI_LEVEL_QUEUE[current_level]->front->thread->priority;
+        newNode->thread->executing_cond = MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond;
+        newNode->thread->quantum = TIME_QUANTUMS[current_level + 1];
+        //newNode->thread->quantum = TIME_QUANTUMS[highest_non_null_level2];
+        Enqueue(MULTI_LEVEL_QUEUE[current_level + 1], newNode);
+        Dequeue(MULTI_LEVEL_QUEUE[current_level]);
 
-        //pthread_cond_wait(&executing_cond, &executing_lock);
-        pthread_mutex_unlock(&executing_lock);
+        int highest_non_null_level2 = get_highest_non_null_level();
+
+        printf("\t[MLFQ AFTER %d]\n", highest_non_null_level2);
+        print_multi_level_queue();
+        current_level = highest_non_null_level2;
+
+        if (MULTI_LEVEL_QUEUE[highest_non_null_level2]->front->thread->id != tid) {
+            pthread_cond_signal(&MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond);
+            pthread_cond_wait(&newNode->thread->executing_cond, &queue_lock);
+        }
+    } else {
+        MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->quantum--;
     }
 
-    return ceil(GLOBAL_TIME);
+    //printf("\t[QUANTUM] tid=%d, quantum=%d\n",  MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->id);
+
+    // GLOBAL_TIME should always be increasing with the currentTime
+    if (ceil(currentTime) > GLOBAL_TIME) {
+        GLOBAL_TIME = ceil(currentTime);
+    }
+
+    // when a thread resumes execution its currentTime was set to the time it was
+    // first added to the queue, not the "real" currentTime.
+    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = GLOBAL_TIME;
+    }
+
+    if (MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front != NULL) {
+        pthread_cond_signal(&MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->executing_cond);
+    }
+
+    pthread_mutex_unlock(&queue_lock);
+    printf("\t[RETURNING] tid=%d, currentTime=%d, GLOBAL_TIME=%d, SCHEDULE_ME_TIME=%d\n", tid, (int)currentTime, (int)GLOBAL_TIME, (int)SCHEDULE_ME_TIME);
+
+    return SCHEDULE_ME_TIME;
 }
 
 
@@ -395,7 +417,7 @@ void insertNodePBS(Queue *queue, Node *node) {
             current = current->next;
         }
 
-        // If the node we're inserting and the node we're inserting it after (current) 
+        // If the node we're inserting and the node we're inserting it after (current)
         // have the same priority, then look at their arrival times.
         // The one with the smaller arrival time will be placed first.
         if (current->thread->priority == node->thread->priority) {
@@ -420,11 +442,11 @@ void insertNodePBS(Queue *queue, Node *node) {
 
 // Adds a node to the end of the queue.
 void Enqueue(Queue *queue, Node *node) {
-    if (DEBUG == 1) {
-    printf("\t\t[ADDED TO READY QUEUE] [size=%d]", queue->size + 1);
-    printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
-        node->thread->id, node->thread->arrival_time, node->thread->required_time, node->thread->priority);
-    }
+    // if (DEBUG == 1) {
+    // printf("\t\t[ADDED TO READY QUEUE] [size=%d]", queue->size + 1);
+    // printf(" tid=%d arrival_time=%f required_time=%d priorty=%d\n",
+    //     node->thread->id, node->thread->arrival_time, node->thread->required_time, node->thread->priority);
+    // }
     node->next = NULL;
     if (queue->front == NULL) {
         queue->front = node;
@@ -498,7 +520,7 @@ void print_queue(Queue *queue) {
     printf("\t\t\t[CURRENT QUEUE] ");
     Node* current = queue->front;
     while (current != NULL) {
-        printf("[%d] ", current->thread->id);
+        printf("[%d {t=%d} {rt=%d} {q=%d}] ", current->thread->id, (int)current->thread->arrival_time, current->thread->required_time, current->thread->quantum);
         current = current->next;
     }
     printf("\n");
@@ -512,4 +534,35 @@ void print_multi_level_queue() {
         printf("\t\t\t[LEVEL = %d]\n\t", i);
         print_queue(MULTI_LEVEL_QUEUE[i]);
     }
+}
+
+int get_highest_non_null_level() {
+    int i = 0;
+    Queue *currentExecutingLevel = MULTI_LEVEL_QUEUE[0];
+    while (i < MULTI_LEVEL_QUEUE_SIZE) {
+        if (MULTI_LEVEL_QUEUE[i]->front != NULL) {
+            return i;
+        }
+        i++;
+    }
+}
+
+Thread *get_thread_from_mlfq(int threadId) {
+    Queue *currentQueue = MULTI_LEVEL_QUEUE[0];
+    int i = 0;
+    while (currentQueue != NULL) {
+        Node *currentNode = currentQueue->front;
+
+        while (currentNode != NULL) {
+            if (currentNode->thread->id == threadId) {
+                return currentNode->thread;
+            }
+            currentNode = currentNode->next;
+        }
+
+        i++;
+        currentQueue = MULTI_LEVEL_QUEUE[i];
+    }
+
+    return NULL;
 }
