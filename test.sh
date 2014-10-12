@@ -5,8 +5,14 @@ do
     for i in 0 1 2 3
     do
         echo "[Testing $policy input_$i]"
-        ./out $POLICY_NUM p1_test/TestInputs/input_$i > outputs/$policy_input$i.txt
-        MINE="outputs/$policy_input$i.txt"
+        MINE="outputs/"
+        MINE+=$policy
+        MINE+="_input"
+        MINE+=$i
+        MINE+=".txt"
+
+        ./out $POLICY_NUM p1_test/TestInputs/input_$i > $MINE
+
         CORRECT="p1_test/TestOutputs/base_input_"
         CORRECT+=$i
         CORRECT+="_"
