@@ -3,12 +3,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define MULTI_LEVEL_QUEUE_SIZE 5
+
 const int DEBUG = 0;
+const int TIME_QUANTUMS[MULTI_LEVEL_QUEUE_SIZE] = { 5, 10, 15, 20, 25 };
 
 struct _thread {
     int id;
     float arrival_time;
-    int original_required_time;
     int required_time;
     int priority;
     pthread_cond_t executing_cond;
@@ -35,9 +37,10 @@ void Enqueue(Queue*, Node*);
 Node* Dequeue(Queue*);
 void insertNodeSRTF(Queue*, Node*);
 void insertNodePBS(Queue*, Node*);
+Node* init_new_node(int, float, int, int);
 int queue_contains_thread(Queue*, int);
 int multi_level_queue_contains_thread(int);
-int get_highest_non_null_level();
+int get_executing_level();
 Thread* get_thread_from_mlfq(int);
 Thread* queue_get_thread(Queue*, int);
 void print_queue(Queue*);
@@ -50,8 +53,6 @@ int PBS(float, int, int, int);
 
 
 Queue *ReadyQueue;
-#define MULTI_LEVEL_QUEUE_SIZE 5
-const int TIME_QUANTUMS[MULTI_LEVEL_QUEUE_SIZE] = { 5, 10, 15, 20, 25 };
 Queue **MULTI_LEVEL_QUEUE;
 
 pthread_mutex_t queue_lock;
@@ -85,14 +86,16 @@ void init_scheduler(int sched_type) {
     ReadyQueue = malloc(sizeof(Queue));
     ReadyQueue->size = 0;
 
-    init_multi_level_queue();
+    if (SCHED_TYPE == 3) {
+        init_multi_level_queue();
+    }
 }
 
 int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
     SCHEDULE_ME_TIME = currentTime;
 
-    pthread_t thread = pthread_self();
     if (DEBUG == 1) {
+        pthread_t thread = pthread_self();
         printf(" \t[SCHEDULEME (%u)] ", (int)thread);
         printf("currentTime=%f, tid=%d, remainingTime=%d, tprio=%d, FRONT Thread=%d\n", currentTime, tid, remainingTime, tprio, (ReadyQueue->front != NULL ? ReadyQueue->front->thread->id : -1));
     }
@@ -109,26 +112,18 @@ int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
 int FCFS(float currentTime, int tid, int remainingTime, int tprio) {
     pthread_mutex_lock(&queue_lock);
 
-    if (currentTime > GLOBAL_TIME)
-        GLOBAL_TIME = currentTime;
+    if (ceil(currentTime) > GLOBAL_TIME) {
+        GLOBAL_TIME = ceil(currentTime);
+    }
 
     // Add thread to the ready queue if it isn't already in there.
     if (queue_contains_thread(ReadyQueue, tid) == 0) {
-
-        Node *newNode =  malloc(sizeof(Node));
-        newNode->thread = malloc(sizeof(Thread));
-        newNode->thread->id = tid;
-        newNode->thread->arrival_time = currentTime;
-        newNode->thread->required_time = remainingTime;
-        newNode->thread->priority = tprio;
-
-        // Lock the queue, so multiple threads aren't trying to add to it at the same time.
+        Node *newNode = init_new_node(tid, currentTime, remainingTime, tprio);
         Enqueue(ReadyQueue, newNode);
     }
 
     // Block current thread as long as it's not at the front of the queue
     while (ReadyQueue->front->thread->id != tid) {
-        GLOBAL_TIME = currentTime;
         pthread_cond_wait(&executing_cond, &queue_lock);
     }
 
@@ -144,7 +139,7 @@ int FCFS(float currentTime, int tid, int remainingTime, int tprio) {
 
     pthread_mutex_unlock(&queue_lock);
 
-    return (int)ceil(GLOBAL_TIME);
+    return GLOBAL_TIME;
 
 }
 
@@ -154,14 +149,7 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
 
     // // Add thread to the ready queue if it isn't already in there.
     if (queue_contains_thread(ReadyQueue, tid) == 0) {
-        Node *newNode = malloc(sizeof(Node));
-        newNode->thread = malloc(sizeof(Thread));
-        newNode->thread->id = tid;
-        newNode->thread->arrival_time = currentTime;
-        newNode->thread->required_time = remainingTime;
-        newNode->thread->priority = tprio;
-        pthread_cond_init(&newNode->thread->executing_cond, NULL);
-
+        Node *newNode = init_new_node(tid, currentTime, remainingTime, tprio);
         insertNodeSRTF(ReadyQueue, newNode);
     }
 
@@ -200,7 +188,174 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
 
     ReadyQueue->front->thread->required_time = remainingTime;
 
-    pthread_t thread = pthread_self();
+    // Once required time = 0, thread is finished executing. Pop the front of the queue,
+    // and signal all threads to resume executing. (Each thread goes back to while loop
+    // and checks if they're at the front of the queue again)
+    if (ReadyQueue->front->thread->required_time == 0) {
+        Dequeue(ReadyQueue);
+        if (ReadyQueue->front != NULL) {
+            pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
+        }
+    }
+
+    pthread_mutex_unlock(&queue_lock);
+
+    // GLOBAL_TIME should always be increasing with the currentTime
+    if (ceil(currentTime) > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = ceil(currentTime);
+    }
+
+    // when a thread resumes execution its currentTime was set to the time it was
+    // first added to the queue, not the "real" currentTime.
+    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = GLOBAL_TIME;
+    }
+
+    if (ReadyQueue->front != NULL) {
+        pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
+    }
+
+    return SCHEDULE_ME_TIME;
+
+}
+
+int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
+    pthread_mutex_lock(&queue_lock);
+
+    // Add thread to the top-level queue if it isn't already contained in any of the queues
+    if (multi_level_queue_contains_thread(tid) == 0) {
+        Node *newNode = init_new_node(tid, currentTime, remainingTime, tprio);
+        newNode->thread->quantum = 5;
+        Enqueue(MULTI_LEVEL_QUEUE[0], newNode);
+    }
+
+    // Find the highest level queue that contains threads that need to be executed
+    int current_level = get_executing_level();
+    Thread *current_thread = get_thread_from_mlfq(tid);
+
+    // Block all threads that are not at the head of the highest level queue
+    while (MULTI_LEVEL_QUEUE[get_executing_level()]->front->thread->id != tid) {
+        pthread_cond_wait(&current_thread->executing_cond, &queue_lock);
+    }
+
+    current_level = get_executing_level();
+
+    // start executing thread
+    MULTI_LEVEL_QUEUE[current_level]->front->thread->arrival_time = currentTime;
+    MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time = remainingTime;
+
+    // When the executing threads remaining time is 0 dequeue it and signal the next thread to execute.
+    // Else if the thread still has remaining time, but it has spent its quantum, then
+    // move it to the next level.
+    // If the thread can still execute, just decrement its quantum
+    if (MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time == 0) {
+        Dequeue(MULTI_LEVEL_QUEUE[current_level]);
+        if (MULTI_LEVEL_QUEUE[current_level]->front != NULL) {
+            pthread_cond_signal(&MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond);
+        }
+    } else if (MULTI_LEVEL_QUEUE[current_level]->front->thread->quantum == 0) {
+
+        Node *newNode = init_new_node(
+            MULTI_LEVEL_QUEUE[current_level]->front->thread->id,
+            MULTI_LEVEL_QUEUE[current_level]->front->thread->arrival_time,
+            MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time,
+            MULTI_LEVEL_QUEUE[current_level]->front->thread->priority);
+        newNode->thread->executing_cond = MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond;
+
+        // Set threads quantum equal to the next level's quantum, unless we're on the last level. Then
+        // set the threads quantum equal to the last level's quantum.
+        if (current_level < MULTI_LEVEL_QUEUE_SIZE - 1) {
+            newNode->thread->quantum = TIME_QUANTUMS[current_level + 1] - 1;
+
+            // Do FCFS
+            Enqueue(MULTI_LEVEL_QUEUE[current_level + 1], newNode);
+            Dequeue(MULTI_LEVEL_QUEUE[current_level]);
+        } else {
+            newNode->thread->quantum = TIME_QUANTUMS[MULTI_LEVEL_QUEUE_SIZE - 1] - 1;
+            // Do round robin for last level
+            Enqueue(MULTI_LEVEL_QUEUE[current_level], newNode);
+            Dequeue(MULTI_LEVEL_QUEUE[current_level]);
+        }
+
+        current_level = get_executing_level();
+
+        // Front thread of the executing level has changed, so signal the new front thread to execute and
+        // block the current thread.
+        if (MULTI_LEVEL_QUEUE[current_level]->front->thread->id != tid) {
+            pthread_cond_signal(&MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond);
+            pthread_cond_wait(&newNode->thread->executing_cond, &queue_lock);
+        }
+    } else {
+        MULTI_LEVEL_QUEUE[current_level]->front->thread->quantum--;
+    }
+
+    // GLOBAL_TIME should always be increasing with the currentTime
+    if (ceil(currentTime) > GLOBAL_TIME) {
+        GLOBAL_TIME = ceil(currentTime);
+    }
+
+    // when a thread resumes execution its currentTime was set to the time it was
+    // first added to the queue, not the "real" currentTime.
+    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
+        SCHEDULE_ME_TIME = GLOBAL_TIME;
+    }
+
+    current_level = get_executing_level();
+    if (MULTI_LEVEL_QUEUE[current_level]->front != NULL) {
+        pthread_cond_signal(&MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond);
+    }
+
+    pthread_mutex_unlock(&queue_lock);
+
+    return SCHEDULE_ME_TIME;
+}
+
+
+int PBS(float currentTime, int tid, int remainingTime, int tprio) {
+
+    pthread_mutex_lock(&queue_lock);
+
+    // Add thread to the ready queue if it isn't already in there.
+    if (queue_contains_thread(ReadyQueue, tid) == 0) {
+        Node *newNode = init_new_node(tid, currentTime, remainingTime, tprio);
+        insertNodePBS(ReadyQueue, newNode);
+    }
+
+    // Update front nodes arrival time so we have the most up to date arrival time for the thread.
+    ReadyQueue->front->thread->arrival_time = currentTime;
+
+    // Find any threads that have the same priority as the current thread
+    // If there are, check their arrival times, and move the one with the lower
+    // arrival time closer to the front. Only need to do this check if the thread
+    // being scheduled is at the front of the queue.
+    Thread *schedulingThread = queue_get_thread(ReadyQueue, tid);
+    if (tid == ReadyQueue->front->thread->id) {
+        Node *current = ReadyQueue->front;
+        int do_swap = 0;
+        while (current != NULL && current->thread->priority == tprio) {
+            if (current->thread->arrival_time < currentTime) {
+                do_swap = 1;
+                break;
+            }
+            current = current->next;
+        }
+
+        // If a thread with equal priority and less arrival time was found swap it with the front thread.
+        if (do_swap == 1) {
+            ReadyQueue->front->next = current->next;
+            current->next = ReadyQueue->front;
+            ReadyQueue->front = current;
+            pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
+            print_queue(ReadyQueue);
+        }
+    }
+
+    // Block current thread as long as it's not at the front of the queue
+    while (ReadyQueue->front->thread->id != tid) {
+        pthread_cond_wait(&schedulingThread->executing_cond, &queue_lock);
+    }
+
+    ReadyQueue->front->thread->required_time = remainingTime;
 
     // Once required time = 0, thread is finished executing. Pop the front of the queue,
     // and signal all threads to resume executing. (Each thread goes back to while loop
@@ -268,191 +423,6 @@ void insertNodeSRTF(Queue *queue, Node *node) {
 
     queue->size++;
     print_queue(queue);
-
-}
-
-int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
-    pthread_mutex_lock(&queue_lock);
-
-    // Add thread to the top-level queue if it isn't already contained in any of the queues
-    if (multi_level_queue_contains_thread(tid) == 0) {
-
-        Node *newNode = malloc(sizeof(Node));
-        newNode->thread = malloc(sizeof(Thread));
-        newNode->thread->id = tid;
-        newNode->thread->arrival_time = currentTime;
-        newNode->thread->required_time = remainingTime;
-        newNode->thread->original_required_time = remainingTime;
-        newNode->thread->priority = tprio;
-        pthread_cond_init(&newNode->thread->executing_cond, NULL);
-        newNode->thread->quantum = 5;
-
-        Enqueue(MULTI_LEVEL_QUEUE[0], newNode);
-    }
-
-    // Find the highest level queue that contains threads that need to be executed
-    int current_level = get_highest_non_null_level();
-    Thread *current_thread = get_thread_from_mlfq(tid);
-
-    // Block all threads that are not at the head of the highest level queue
-    while (MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->id != tid) {
-        pthread_cond_wait(&current_thread->executing_cond, &queue_lock);
-    }
-
-    current_level = get_highest_non_null_level();
-
-    // start executing thread
-    MULTI_LEVEL_QUEUE[current_level]->front->thread->arrival_time = currentTime;
-    MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time = remainingTime;
-
-    if (MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time == 0) {
-        Dequeue(MULTI_LEVEL_QUEUE[current_level]);
-        if (MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front != NULL) {
-            pthread_cond_signal(&MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->executing_cond);
-        }
-    } else if (MULTI_LEVEL_QUEUE[current_level]->front->thread->quantum == 0) {
-
-        Node *newNode = malloc(sizeof(Node));
-        newNode->thread = malloc(sizeof(Thread));
-        newNode->thread->id = MULTI_LEVEL_QUEUE[current_level]->front->thread->id;
-        newNode->thread->arrival_time = MULTI_LEVEL_QUEUE[current_level]->front->thread->arrival_time;
-        newNode->thread->required_time = MULTI_LEVEL_QUEUE[current_level]->front->thread->required_time;
-        newNode->thread->original_required_time = MULTI_LEVEL_QUEUE[current_level]->front->thread->original_required_time;
-        newNode->thread->priority = MULTI_LEVEL_QUEUE[current_level]->front->thread->priority;
-        newNode->thread->executing_cond = MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond;
-
-        // Set threads quantum equal to the next level's quantum, unless we're on the last level. Then
-        // set the threads quantum equal to the last level's quantum.
-        if (current_level < MULTI_LEVEL_QUEUE_SIZE - 1) {
-            newNode->thread->quantum = TIME_QUANTUMS[current_level + 1] - 1;
-
-            // Do FCFS
-            Enqueue(MULTI_LEVEL_QUEUE[current_level + 1], newNode);
-            Dequeue(MULTI_LEVEL_QUEUE[current_level]);
-        } else {
-            newNode->thread->quantum = TIME_QUANTUMS[MULTI_LEVEL_QUEUE_SIZE - 1] - 1;
-            // Do round robin for last level
-            Enqueue(MULTI_LEVEL_QUEUE[current_level], newNode);
-            Dequeue(MULTI_LEVEL_QUEUE[current_level]);
-        }
-
-
-        int highest_non_null_level2 = get_highest_non_null_level();
-
-        current_level = highest_non_null_level2;
-
-        if (MULTI_LEVEL_QUEUE[current_level]->front->thread->id != tid) {
-            pthread_cond_signal(&MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond);
-            pthread_cond_wait(&newNode->thread->executing_cond, &queue_lock);
-        }
-    } else {
-        MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->quantum--;
-    }
-
-    // GLOBAL_TIME should always be increasing with the currentTime
-    if (ceil(currentTime) > GLOBAL_TIME) {
-        GLOBAL_TIME = ceil(currentTime);
-    }
-
-    // when a thread resumes execution its currentTime was set to the time it was
-    // first added to the queue, not the "real" currentTime.
-    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = GLOBAL_TIME;
-    }
-
-    if (MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front != NULL) {
-        pthread_cond_signal(&MULTI_LEVEL_QUEUE[get_highest_non_null_level()]->front->thread->executing_cond);
-    }
-print_multi_level_queue();
-    pthread_mutex_unlock(&queue_lock);
-
-    return SCHEDULE_ME_TIME;
-}
-
-
-int PBS(float currentTime, int tid, int remainingTime, int tprio) {
-
-    pthread_mutex_lock(&queue_lock);
-
-    // Add thread to the ready queue if it isn't already in there.
-    if (queue_contains_thread(ReadyQueue, tid) == 0) {
-        Node *newNode = malloc(sizeof(Node));
-        newNode->thread = malloc(sizeof(Thread));
-        newNode->thread->id = tid;
-        newNode->thread->arrival_time = currentTime;
-        newNode->thread->required_time = remainingTime;
-        newNode->thread->priority = tprio;
-        pthread_cond_init(&newNode->thread->executing_cond, NULL);
-
-        insertNodePBS(ReadyQueue, newNode);
-    }
-
-    // Update front nodes arrival time so we have the most up to date arrival time for the thread.
-    ReadyQueue->front->thread->arrival_time = currentTime;
-
-    // Find any threads that have the same priority as the current thread
-    // If there are, check their arrival times, and move the one with the lower
-    // arrival time closer to the front. Only need to do this check if the thread
-    // being scheduled is at the front of the queue.
-    Thread *schedulingThread = queue_get_thread(ReadyQueue, tid);
-    if (tid == ReadyQueue->front->thread->id) {
-        Node *current = ReadyQueue->front;
-        int do_swap = 0;
-        while (current != NULL && current->thread->priority == tprio) {
-            if (current->thread->arrival_time < currentTime) {
-                do_swap = 1;
-                break;
-            }
-            current = current->next;
-        }
-
-        // If a thread with equal priority and less arrival time was found swap it with the front thread.
-        if (do_swap == 1) {
-            ReadyQueue->front->next = current->next;
-            current->next = ReadyQueue->front;
-            ReadyQueue->front = current;
-            pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
-            print_queue(ReadyQueue);
-        }
-    }
-
-    // Block current thread as long as it's not at the front of the queue
-    while (ReadyQueue->front->thread->id != tid) {
-        pthread_cond_wait(&schedulingThread->executing_cond, &queue_lock);
-    }
-
-    ReadyQueue->front->thread->required_time = remainingTime;
-
-    pthread_t thread = pthread_self();
-
-    // Once required time = 0, thread is finished executing. Pop the front of the queue,
-    // and signal all threads to resume executing. (Each thread goes back to while loop
-    // and checks if they're at the front of the queue again)
-    if (ReadyQueue->front->thread->required_time == 0) {
-        Dequeue(ReadyQueue);
-        if (ReadyQueue->front != NULL) {
-            pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
-        }
-    }
-
-    pthread_mutex_unlock(&queue_lock);
-
-    // GLOBAL_TIME should always be increasing with the currentTime
-    if (ceil(currentTime) > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = ceil(currentTime);
-    }
-
-    // when a thread resumes execution its currentTime was set to the time it was
-    // first added to the queue, not the "real" currentTime.
-    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = GLOBAL_TIME;
-    }
-
-    if (ReadyQueue->front != NULL) {
-        pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
-    }
-
-    return SCHEDULE_ME_TIME;
 
 }
 
@@ -534,6 +504,18 @@ Node* Dequeue(Queue *queue) {
     return temp;
 }
 
+Node* init_new_node(int tid, float arrival_time, int required_time, int priority) {
+    Node *newNode = malloc(sizeof(Node));
+    newNode->thread = malloc(sizeof(Thread));
+    newNode->thread->id = tid;
+    newNode->thread->arrival_time = arrival_time;
+    newNode->thread->required_time = required_time;
+    newNode->thread->priority = priority;
+    pthread_cond_init(&newNode->thread->executing_cond, NULL);
+
+    return newNode;
+}
+
 // Checks if the queue contains the thread id
 // 0 = false, 1 = true
 int queue_contains_thread(Queue *queue, int threadId) {
@@ -593,7 +575,7 @@ void print_multi_level_queue() {
     }
 }
 
-int get_highest_non_null_level() {
+int get_executing_level() {
     int i = 0;
     Queue *currentExecutingLevel = MULTI_LEVEL_QUEUE[0];
     while (i < MULTI_LEVEL_QUEUE_SIZE) {
