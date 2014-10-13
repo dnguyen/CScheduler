@@ -344,25 +344,53 @@ int PBS(float currentTime, int tid, int remainingTime, int tprio) {
 
     pthread_mutex_lock(&queue_lock);
 
-    // // Add thread to the ready queue if it isn't already in there.
+    // Add thread to the ready queue if it isn't already in there.
     if (queue_contains_thread(ReadyQueue, tid) == 0) {
         Node *newNode = malloc(sizeof(Node));
         newNode->thread = malloc(sizeof(Thread));
         newNode->thread->id = tid;
-        newNode->thread->arrival_time = ceil(currentTime);
+        newNode->thread->arrival_time = currentTime;
         newNode->thread->required_time = remainingTime;
         newNode->thread->priority = tprio;
+        pthread_cond_init(&newNode->thread->executing_cond, NULL);
 
-        // Lock the queue, so multiple threads aren't trying to add to it at the same time.
         insertNodePBS(ReadyQueue, newNode);
+    }
+
+    // Update front nodes arrival time so we have the most up to date arrival time for the thread.
+    ReadyQueue->front->thread->arrival_time = currentTime;
+
+    // Find any threads that have the same priority as the current thread
+    // If there are, check their arrival times, and move the one with the lower
+    // arrival time closer to the front. Only need to do this check if the thread
+    // being scheduled is at the front of the queue.
+    Thread *schedulingThread = queue_get_thread(ReadyQueue, tid);
+    if (tid == ReadyQueue->front->thread->id) {
+        Node *current = ReadyQueue->front;
+        int do_swap = 0;
+        while (current != NULL && current->thread->priority == tprio) {
+            if (current->thread->arrival_time < currentTime) {
+                do_swap = 1;
+                break;
+            }
+            current = current->next;
+        }
+
+        // If a thread with equal priority and less arrival time was found swap it with the front thread.
+        if (do_swap == 1) {
+            ReadyQueue->front->next = current->next;
+            current->next = ReadyQueue->front;
+            ReadyQueue->front = current;
+            pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
+            print_queue(ReadyQueue);
+        }
     }
 
     // Block current thread as long as it's not at the front of the queue
     while (ReadyQueue->front->thread->id != tid) {
-        pthread_cond_wait(&executing_cond, &queue_lock);
+        pthread_cond_wait(&schedulingThread->executing_cond, &queue_lock);
     }
 
-    ReadyQueue->front->thread->arrival_time = currentTime;
     ReadyQueue->front->thread->required_time = remainingTime;
 
     pthread_t thread = pthread_self();
@@ -373,7 +401,7 @@ int PBS(float currentTime, int tid, int remainingTime, int tprio) {
     if (ReadyQueue->front->thread->required_time == 0) {
         Dequeue(ReadyQueue);
         if (ReadyQueue->front != NULL)
-            pthread_cond_signal(&executing_cond);
+            pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
     }
 
     pthread_mutex_unlock(&queue_lock);
@@ -390,7 +418,7 @@ int PBS(float currentTime, int tid, int remainingTime, int tprio) {
     }
 
     if (ReadyQueue->front != NULL)
-        pthread_cond_signal(&executing_cond);
+        pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
 
     return SCHEDULE_ME_TIME;
 
@@ -505,6 +533,7 @@ Thread *queue_get_thread(Queue *queue, int threadId) {
         if (current->thread->id == threadId) {
             return current->thread;
         }
+        current = current->next;
     }
     return NULL;
 }
@@ -514,7 +543,7 @@ void print_queue(Queue *queue) {
         printf("\t\t\t[CURRENT QUEUE] ");
         Node* current = queue->front;
         while (current != NULL) {
-            printf("[%d {t=%d} {rt=%d} {q=%d}] ", current->thread->id, (int)current->thread->arrival_time, current->thread->required_time, current->thread->quantum);
+            printf("[%d {t=%d} {p=%d}] ", current->thread->id, (int)current->thread->arrival_time, current->thread->priority);
             current = current->next;
         }
         printf("\n");
