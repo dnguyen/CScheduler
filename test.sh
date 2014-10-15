@@ -11,7 +11,7 @@ do
         MINE+=$i
         MINE+=".txt"
 
-        ./out $POLICY_NUM p1_test/TestInputs/input_$i > $MINE
+        ./p1 $POLICY_NUM p1_test/TestInputs/input_$i > $MINE
 
         CORRECT="p1_test/TestOutputs/base_input_"
         CORRECT+=$i

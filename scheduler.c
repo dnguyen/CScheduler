@@ -51,7 +51,7 @@ int SRTF(float, int, int, int);
 int MLFQ(float, int, int, int);
 int PBS(float, int, int, int);
 
-
+// Global variables
 Queue *ReadyQueue;
 Queue **MULTI_LEVEL_QUEUE;
 
@@ -59,12 +59,7 @@ pthread_mutex_t queue_lock;
 pthread_mutex_t executing_lock;
 pthread_cond_t executing_cond;
 
-// Keep track of 2 times: a global time, and the time schedule_me was called
-// Should always be in sync with currentTime, but if currentTime, GLOBAL_TIME, SCHEDULE_ME_TIME
-// ever go out of sync, we'll decide which one to use before returning from schedume_me
 float GLOBAL_TIME;
-float SCHEDULE_ME_TIME;
-
 int SCHED_TYPE;
 
 void init_multi_level_queue() {
@@ -92,7 +87,7 @@ void init_scheduler(int sched_type) {
 }
 
 int scheduleme(float currentTime, int tid, int remainingTime, int tprio) {
-    SCHEDULE_ME_TIME = currentTime;
+    GLOBAL_TIME = currentTime;
 
     if (DEBUG == 1) {
         pthread_t thread = pthread_self();
@@ -201,21 +196,15 @@ int SRTF(float currentTime, int tid, int remainingTime, int tprio) {
     pthread_mutex_unlock(&queue_lock);
 
     // GLOBAL_TIME should always be increasing with the currentTime
-    if (ceil(currentTime) > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = ceil(currentTime);
-    }
-
-    // when a thread resumes execution its currentTime was set to the time it was
-    // first added to the queue, not the "real" currentTime.
-    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = GLOBAL_TIME;
+    if (ceil(currentTime) > GLOBAL_TIME) {
+        GLOBAL_TIME = ceil(currentTime);
     }
 
     if (ReadyQueue->front != NULL) {
         pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
     }
 
-    return SCHEDULE_ME_TIME;
+    return GLOBAL_TIME;
 
 }
 
@@ -294,12 +283,6 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
         GLOBAL_TIME = ceil(currentTime);
     }
 
-    // when a thread resumes execution its currentTime was set to the time it was
-    // first added to the queue, not the "real" currentTime.
-    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = GLOBAL_TIME;
-    }
-
     current_level = get_executing_level();
     if (MULTI_LEVEL_QUEUE[current_level]->front != NULL) {
         pthread_cond_signal(&MULTI_LEVEL_QUEUE[current_level]->front->thread->executing_cond);
@@ -307,7 +290,7 @@ int MLFQ(float currentTime, int tid, int remainingTime, int tprio) {
 
     pthread_mutex_unlock(&queue_lock);
 
-    return SCHEDULE_ME_TIME;
+    return GLOBAL_TIME;
 }
 
 
@@ -370,21 +353,15 @@ int PBS(float currentTime, int tid, int remainingTime, int tprio) {
     pthread_mutex_unlock(&queue_lock);
 
     // GLOBAL_TIME should always be increasing with the currentTime
-    if (ceil(currentTime) > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = ceil(currentTime);
-    }
-
-    // when a thread resumes execution its currentTime was set to the time it was
-    // first added to the queue, not the "real" currentTime.
-    if (GLOBAL_TIME > SCHEDULE_ME_TIME) {
-        SCHEDULE_ME_TIME = GLOBAL_TIME;
+    if (ceil(currentTime) > GLOBAL_TIME) {
+        GLOBAL_TIME = ceil(currentTime);
     }
 
     if (ReadyQueue->front != NULL) {
         pthread_cond_signal(&ReadyQueue->front->thread->executing_cond);
     }
 
-    return SCHEDULE_ME_TIME;
+    return GLOBAL_TIME;
 
 }
 
